@@ -1,0 +1,276 @@
+local api = vim.api
+local os = require("os")
+
+local function read_file(file_path)
+	local content = vim.fn.readfile(file_path)
+	if not content then
+		print("Could not read file: " .. file_path)
+		return nil
+	end
+	return table.concat(content, "\n")
+end
+
+local function all_trim(s)
+	return s:match("^%s*(.-)%s*$")
+end
+
+local function parse_ical(content, file_path)
+	local events = {}
+	local event = nil
+
+	for line in content:gmatch("[^\r\n]+") do
+		if line:match("^BEGIN:VEVENT") then
+			event = { file_path = file_path }
+		elseif line:match("^END:VEVENT") then
+			if event then
+				table.insert(events, event)
+			end
+			event = nil
+		elseif event then
+			local key, value = line:match("^([^;:]+).-:(.*)$")
+			if key and value then
+				event[key] = value
+			end
+		end
+	end
+
+	return events
+end
+
+local function parse_datetime(date)
+	if not date then
+		return nil
+	end
+	-- TODO timezones
+	local t = {}
+	t.year, t.month, t.day = date:match("^(%d%d%d%d)(%d%d)(%d%d)")
+	t.hour, t.min, t.sec = date:match("T(%d%d)(%d%d)(%d%d)")
+	if t.year and t.month and t.day and t.hour and t.min and t.sec then
+		return os.time(t)
+	end
+	if t.year and t.month and t.day then
+		t.hour, t.min, t.sec = 0, 0, 0
+		return os.time(t)
+	end
+	return nil, "Invalid date format"
+end
+
+local function format_date(datetime)
+	if not datetime then
+		return ""
+	end
+	local d = os.date("*t", datetime)
+	local format
+	if d.sec == 0 and d.min == 0 and d.hour == 0 then
+		format = "%Y-%m-%d"
+	else
+		format = "%Y-%m-%d %I:%M%p"
+	end
+	return os.date(format, datetime)
+end
+
+local function load_entry(event)
+	local entry = {}
+	entry.dtstart = parse_datetime(event.DTSTART)
+	entry.dtend = parse_datetime(event.DTEND)
+	entry.rrule = event.RRULE
+	entry.summary = all_trim(event.SUMMARY)
+	-- TODO multiline
+	entry.file_path = event.file_path
+	entry.recurrence_id = parse_datetime(event["RECURRENCE-ID"])
+	if not entry.dtstart then
+		print("No start date for: " .. event.file_path)
+		return nil
+	end
+	return entry
+end
+
+local function load_cal(dir)
+	dir = vim.fs.normalize(dir)
+	local cal_name = vim.fs.basename(dir)
+
+	local stat = vim.loop.fs_stat(dir)
+	if not stat or stat.type ~= 'directory' then
+		print("Directory does not exist: " .. dir)
+		return nil, {}
+	end
+
+	-- events are ical files
+	local events = {}
+	for filename, type in vim.fs.dir(dir) do
+		if type == "file" then
+			local file_path = dir .. "/" .. filename
+			local content = read_file(file_path)
+			if content then
+				local file_events = parse_ical(content, file_path)
+				for _, event in ipairs(file_events) do
+					table.insert(events, event)
+				end
+			end
+		end
+	end
+
+	-- entries are our in-memory representation of ical events
+	local entries = {}
+	for _, event in ipairs(events) do
+		local entry = load_entry(event)
+		if entry then
+			table.insert(entries, entry)
+		end
+	end
+
+	return cal_name, entries
+end
+
+local function add_time_to_date(date, interval, unit)
+	local t = os.date("*t", date)
+	if unit == "DAILY" then
+		t.day = t.day + interval
+	elseif unit == "WEEKLY" then
+		t.day = t.day + interval * 7
+	elseif unit == "MONTHLY" then
+		t.month = t.month + interval
+	elseif unit == "YEARLY" then
+		t.year = t.year + interval
+	end
+	return os.time(t)
+end
+
+local function recurring_entries(entry, exceptions)
+	local rrule = entry.rrule
+	if not rrule then
+		return { entry }
+	end
+
+	local recurrences = {}
+	local interval = tonumber(rrule:match("INTERVAL=(%d+)")) or 1
+	local freq = rrule:match("FREQ=(%a+)")
+	local until_str = rrule:match("UNTIL=(%d+T?%d*)")
+	local count = tonumber(rrule:match("COUNT=(%d+)"))
+
+	local until_time = nil
+	if until_str then
+		until_time = parse_datetime(until_str)
+	end
+
+	local occurrence_datetime = entry.dtstart
+	local end_time_offset = entry.dtend - entry.dtstart
+	local max_recurrences = 10
+	while #recurrences < max_recurrences do
+		if until_time and occurrence_datetime > until_time then
+			break
+		end
+		if count and #recurrences >= count then
+			break
+		end
+		local occurrence = vim.deepcopy(entry)
+		occurrence.dtstart = occurrence_datetime
+		occurrence.dtend = occurrence_datetime + end_time_offset
+
+		local is_exception = false
+		for _, ex in ipairs(exceptions) do
+			if ex.recurrence_id and ex.recurrence_id == occurrence_datetime then
+				is_exception = true
+				table.insert(recurrences, ex)
+				break
+			end
+		end
+		if not is_exception then
+			table.insert(recurrences, occurrence)
+		end
+
+		occurrence_datetime = add_time_to_date(occurrence_datetime, interval, freq)
+	end
+
+	return recurrences
+end
+
+local function display_cal(cal_name, entries)
+	local entries_with_recurrences = {}
+	local exceptions = {}
+
+	for _, entry in ipairs(entries) do
+		if entry.recurrence_id then
+			table.insert(exceptions, entry)
+		end
+	end
+	for _, entry in ipairs(entries) do
+		if not entry.recurrence_id then
+			local recurrences = recurring_entries(entry, exceptions)
+			for _, recurrence in ipairs(recurrences) do
+				table.insert(entries_with_recurrences, recurrence)
+			end
+		end
+	end
+
+	table.sort(entries_with_recurrences, function(a, b)
+		return a.dtstart < b.dtstart
+	end)
+
+	local bufnr = api.nvim_create_buf(false, true)
+	api.nvim_set_option_value('buftype', 'nofile', { buf = bufnr })
+	-- api.nvim_set_option_value('bufhidden', 'hide', { buf = bufnr })
+	api.nvim_set_option_value('swapfile', false, { buf = bufnr })
+	api.nvim_set_option_value('buflisted', true, { buf = bufnr })
+	api.nvim_buf_set_name(bufnr, cal_name .. " Calendar")
+	api.nvim_command('enew')
+	api.nvim_win_set_buf(0, bufnr)
+
+	local lines = {}
+	local current_time = os.time()
+	local current_line = 0
+
+	for i, entry in ipairs(entries_with_recurrences) do
+		if current_line == 0 and entry.dtstart >= current_time then
+			current_line = i
+		end
+		local len = string.len(format_date(0))
+		table.insert(lines,
+			string.format("%-" .. len .. "s -- %-" .. 18 .. "s %s", format_date(entry.dtstart),
+				format_date(entry.dtend) or entry.dtstart, entry.summary or "-"))
+	end
+
+	api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+
+	api.nvim_set_option_value('modifiable', false, { buf = bufnr })
+	api.nvim_set_option_value('readonly', true, { buf = bufnr })
+
+	api.nvim_buf_set_var(bufnr, 'entries', entries_with_recurrences)
+
+	-- Create a mapping to open the corresponding file
+	api.nvim_buf_set_keymap(bufnr, 'n', '<CR>', '<cmd>lua _G.open_event_file()<CR>', { noremap = true, silent = true })
+
+	-- Move the cursor to the first event on or after current date
+	if current_line > 0 then
+		api.nvim_win_set_cursor(0, { current_line, 0 })
+	end
+end
+
+function _G.open_event_file()
+	local bufnr = api.nvim_get_current_buf()
+	local cursor = api.nvim_win_get_cursor(0)
+	local line_nr = cursor[1]
+	local entries = api.nvim_buf_get_var(bufnr, 'entries')
+	local entry = entries[line_nr]
+	if entry and entry.file_path then
+		vim.cmd('edit ' .. entry.file_path)
+	else
+		print("No file found for this line")
+	end
+end
+
+vim.api.nvim_create_user_command(
+	'Calendar',
+	function(opts)
+		local dir = opts.args
+		if dir == "" then
+			print("Usage: Calendar <dir>")
+			return
+		end
+		local cal_name, entries = load_cal(dir)
+		if cal_name then
+			display_cal(cal_name, entries)
+		end
+	end,
+	{ nargs = 1 }
+)
