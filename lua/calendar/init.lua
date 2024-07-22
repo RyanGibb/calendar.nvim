@@ -208,7 +208,7 @@ function _G.calendar_fold_text()
 	return table.concat(lines, " ")
 end
 
-local function display_cal(cal_name, entries, window_start, window_end)
+local function generate_day_map(entries, window_start, window_end)
 	local entries_with_recurrences = {}
 	local exceptions = {}
 
@@ -263,7 +263,7 @@ local function display_cal(cal_name, entries, window_start, window_end)
 	local lines = {}
 	local today = get_date(os.time())
 	local current_line = 0
-	local entry_to_line_map = {}
+	local line_to_entry_map = {}
 
 	for _, day in ipairs(sorted_days) do
 		if day == today then
@@ -297,10 +297,13 @@ local function display_cal(cal_name, entries, window_start, window_end)
 				line = string.format(" %27s %s", time, summary)
 			end
 			table.insert(lines, line)
-			entry_to_line_map[#lines] = entry
+			line_to_entry_map[#lines] = entry
 		end
 	end
+	return lines, line_to_entry_map, current_line
+end
 
+local function display_cal(cal_name, lines, line_to_entry_map, current_line)
 	local bufnr = api.nvim_create_buf(false, true)
 	api.nvim_set_option_value('buftype', 'nofile', { buf = bufnr })
 	api.nvim_set_option_value('swapfile', false, { buf = bufnr })
@@ -312,14 +315,11 @@ local function display_cal(cal_name, entries, window_start, window_end)
 
 	api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
-	-- Set buffer options
 	api.nvim_set_option_value('modifiable', false, { buf = bufnr })
 	api.nvim_set_option_value('readonly', true, { buf = bufnr })
 
-	-- Store entries in buffer variable
-	api.nvim_buf_set_var(bufnr, 'entry_to_line_map', entry_to_line_map)
-
 	-- Create a mapping to open the corresponding file
+	api.nvim_buf_set_var(bufnr, 'entry_to_line_map', line_to_entry_map)
 	api.nvim_buf_set_keymap(bufnr, 'n', '<CR>', '<cmd>lua _G.open_event_file()<CR>', { noremap = true, silent = true })
 
 	-- Move the cursor to the first event on or after current date
@@ -368,7 +368,8 @@ vim.api.nvim_create_user_command(
 
 		local cal_name, entries = load_cal(dir)
 		if cal_name then
-			display_cal(cal_name, entries, window_start, window_end)
+			local lines, line_to_entry_map, current_line = generate_day_map(entries, window_start, window_end)
+			display_cal(cal_name, lines, line_to_entry_map, current_line)
 		end
 	end,
 	{ nargs = '*' }
