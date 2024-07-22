@@ -60,7 +60,7 @@ local function get_date(datetime)
 end
 
 local function format_date(date)
-	local format = "%Y-%m-%d"
+	local format = "%a %Y-%m-%d"
 	return os.date(format, date)
 end
 
@@ -275,7 +275,7 @@ local function generate_day_map(entries, window_start, window_end)
 				line = string.format("%s %17s %s", day_str, time, summary)
 				first_event = false
 			else
-				line = string.format(" %27s %s", time, summary)
+				line = string.format(" %31s %s", time, summary)
 			end
 			table.insert(lines, line)
 			line_to_entry_map[#lines] = entry
