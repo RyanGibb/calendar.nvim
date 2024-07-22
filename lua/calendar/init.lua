@@ -139,7 +139,7 @@ local function increment_date(date, interval, unit)
 	return os.time(t)
 end
 
-local function recurring_entries(entry, exceptions)
+local function recurring_entries(entry, exceptions, window_start, window_end)
 	local rrule = entry.rrule
 	if not rrule then
 		return { entry }
@@ -157,36 +157,37 @@ local function recurring_entries(entry, exceptions)
 	end
 
 	local occurrence_datetime = entry.dtstart.value
-	local end_time_offset
-	if entry.dtend then
-		end_time_offset = entry.dtend.value - entry.dtstart.value
-	else
-		end_time_offset = 0
-	end
+	local end_time_offset = entry.dtend and entry.dtend.value - entry.dtstart.value or 0
 	local max_recurrences = 1000
-	while #recurrences < max_recurrences do
-		if until_time and occurrence_datetime > until_time then
+	local recurrences_count = 0
+
+	while recurrences_count < max_recurrences do
+		if (until_time and occurrence_datetime > until_time) or
+			(count and recurrences_count >= count) or
+			(occurrence_datetime > window_end) then
 			break
-		end
-		if count and #recurrences >= count then
-			break
-		end
-		local occurrence = vim.deepcopy(entry)
-		occurrence.dtstart.value = occurrence_datetime
-		if occurrence.dtend then
-			occurrence.dtend.value = occurrence_datetime + end_time_offset
 		end
 
-		local is_exception = false
-		for _, ex in ipairs(exceptions) do
-			if ex.recurrence_id and ex.recurrence_id == occurrence_datetime then
-				is_exception = true
-				table.insert(recurrences, ex)
-				break
+		if occurrence_datetime >= window_start or (occurrence_datetime + end_time_offset) <= window_end then
+			local occurrence = vim.deepcopy(entry)
+			occurrence.dtstart.value = occurrence_datetime
+			if occurrence.dtend then
+				occurrence.dtend.value = occurrence_datetime + end_time_offset
 			end
-		end
-		if not is_exception then
-			table.insert(recurrences, occurrence)
+
+			local is_exception = false
+			for _, ex in ipairs(exceptions) do
+				if ex.recurrence_id and ex.recurrence_id.value == occurrence_datetime then
+					is_exception = true
+					table.insert(recurrences, ex)
+					break
+				end
+			end
+			if not is_exception then
+				table.insert(recurrences, occurrence)
+			end
+
+			recurrences_count = recurrences_count + 1
 		end
 
 		occurrence_datetime = increment_date(occurrence_datetime, interval, freq)
@@ -195,7 +196,7 @@ local function recurring_entries(entry, exceptions)
 	return recurrences
 end
 
-local function display_cal(cal_name, entries)
+local function display_cal(cal_name, entries, window_start, window_end)
 	local entries_with_recurrences = {}
 	local exceptions = {}
 
@@ -207,7 +208,7 @@ local function display_cal(cal_name, entries)
 
 	for _, entry in ipairs(entries) do
 		if not entry.recurrence_id then
-			local recurrences = recurring_entries(entry, exceptions)
+			local recurrences = recurring_entries(entry, exceptions, window_start, window_end)
 			for _, recurrence in ipairs(recurrences) do
 				table.insert(entries_with_recurrences, recurrence)
 			end
@@ -220,18 +221,24 @@ local function display_cal(cal_name, entries)
 
 	local days_map = {}
 	for _, entry in ipairs(entries_with_recurrences) do
+		if entry.dtstart.value > window_end or (entry.dtstart and entry.dtstart.value < window_start) then
+			goto continue
+		end
 		local current_day = get_date(entry.dtstart.value)
 		repeat
 			if not days_map[current_day] then
 				days_map[current_day] = {}
 			end
-			table.insert(days_map[current_day], entry)
+			if current_day >= window_start and current_day <= window_end then
+				table.insert(days_map[current_day], entry)
+			end
 			-- we call get_date here to zero the hours, mins, and seconds,
 			-- (e.g. summer time) which might vary due to timezone changes
 			current_day = get_date(increment_date(current_day, 1, "DAILY"))
 		until
-		-- dtend is exclusive
+			-- dtend is exclusive
 			not entry.dtend or current_day >= entry.dtend.value
+		::continue::
 	end
 
 	-- Sort the days
@@ -325,15 +332,26 @@ end
 vim.api.nvim_create_user_command(
 	'Calendar',
 	function(opts)
-		local dir = opts.args
-		if dir == "" then
-			print("Usage: Calendar <dir>")
+		local args = vim.split(opts.args, " ")
+		local dir = args[1]
+		if not dir or dir == "" then
+			print("Usage: Calendar <dir> [<start_date>] [<end_date>]")
 			return
 		end
+
+		local window_start, window_end = os.time({ year = 0, month = 1, day = 1 }),
+			increment_date(os.time(), 100, "YEARLY")
+		if args[2] then
+			window_start = parse_datetime(args[2]).value
+		end
+		if args[3] then
+			window_end = parse_datetime(args[3]).value
+		end
+
 		local cal_name, entries = load_cal(dir)
 		if cal_name then
-			display_cal(cal_name, entries)
+			display_cal(cal_name, entries, window_start, window_end)
 		end
 	end,
-	{ nargs = 1 }
+	{ nargs = '*' }
 )
