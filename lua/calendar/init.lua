@@ -1,3 +1,15 @@
+local config = {
+	intermediate_events = false,
+}
+
+local M = {}
+
+function M.setup(user_config)
+	if user_config then
+		config = vim.tbl_extend("force", config, user_config)
+	end
+end
+
 local api = vim.api
 local os = require("os")
 
@@ -72,7 +84,12 @@ end
 local function load_entry(event)
 	local entry = {}
 	entry.dtstart = parse_datetime(event.DTSTART)
-	entry.dtend = parse_datetime(event.DTEND)
+	local dtend = parse_datetime(event.DTEND)
+	-- the last day the event occurs on is one day (86400 seconds) before the exclusive dtend
+	if dtend and dtend.type == "date" then
+		dtend.value = dtend and dtend.value - 86400
+	end
+	entry.dtend = dtend
 	entry.rrule = event.RRULE
 	entry.summary = all_trim(event.SUMMARY)
 	-- TODO multiline
@@ -193,6 +210,13 @@ function _G.calendar_fold_text()
 	return table.concat(lines, " ")
 end
 
+local function add_entry_to_days_map(days_map, day, entry)
+	if not days_map[day] then
+		days_map[day] = {}
+	end
+	table.insert(days_map[day], entry)
+end
+
 local function generate_day_map(entries, window_start, window_end)
 	local entries_with_recurrences = {}
 	local exceptions = {}
@@ -214,23 +238,27 @@ local function generate_day_map(entries, window_start, window_end)
 	end)
 	local days_map = {}
 	for _, entry in ipairs(entries_with_recurrences) do
-		if entry.dtstart.value > window_end or (entry.dtstart and entry.dtstart.value < window_start) then
+		if entry.dtstart.value > window_end or (entry.dtend and entry.dtend.value < window_start) then
 			goto continue
 		end
-		local current_day = get_date(entry.dtstart.value)
-		repeat
-			if not days_map[current_day] then
-				days_map[current_day] = {}
+		if config.intermediate_events then
+			local current_day = get_date(entry.dtstart.value)
+			repeat
+				if current_day >= window_start and current_day <= window_end then
+					add_entry_to_days_map(days_map, current_day, entry)
+				end
+				-- we call get_date here to zero the hours, mins, and seconds,
+				-- (e.g. summer time) which might vary due to timezone changes
+				current_day = get_date(increment_date(current_day, 1, "DAILY"))
+			until not entry.dtend or current_day > entry.dtend.value
+		else
+			local start_date = get_date(entry.dtstart.value)
+			local end_date = entry.dtend and get_date(entry.dtend.value) or nil
+			add_entry_to_days_map(days_map, start_date, entry)
+			if end_date and start_date ~= end_date then
+				add_entry_to_days_map(days_map, end_date, entry)
 			end
-			if current_day >= window_start and current_day <= window_end then
-				table.insert(days_map[current_day], entry)
-			end
-			-- we call get_date here to zero the hours, mins, and seconds,
-			-- (e.g. summer time) which might vary due to timezone changes
-			current_day = get_date(increment_date(current_day, 1, "DAILY"))
-		until
-			-- dtend is exclusive
-			not entry.dtend or current_day >= entry.dtend.value
+		end
 		::continue::
 	end
 
@@ -255,19 +283,18 @@ local function generate_day_map(entries, window_start, window_end)
 		for _, entry in ipairs(days_map[day]) do
 			local summary = entry.summary or ""
 			local time = ""
-			-- the last day the event occurs on is one day (86400 seconds) before the exclusive dtend
-			local last_day = entry.dtend and entry.dtend.value - 86400 or entry.dtstart.value
-			if entry.dtstart.type == "date" then
-				if entry.dtstart.value ~= last_day then
-				  if day == entry.dtstart.value then
+			local start_date = get_date(entry.dtstart.value)
+			local end_date = entry.dtend and get_date(entry.dtend.value) or nil
+			if end_date and start_date ~= end_date then
+				if day == start_date then
 					summary = "|-> " .. entry.summary
-				  elseif day == last_day then
+				elseif day == end_date then
 					summary = "<-| " .. entry.summary
-				  elseif day > entry.dtstart.value and day < last_day then
+				elseif day > start_date and day < end_date then
 					summary = "<-> " .. entry.summary
-				  end
 				end
-			else
+			end
+			if entry.dtstart.type == "time" then
 				local start_time = ""
 				if get_date(entry.dtstart.value) == day then
 					start_time = format_time(entry.dtstart.value)
@@ -362,3 +389,5 @@ vim.api.nvim_create_user_command(
 	end,
 	{ nargs = '*' }
 )
+
+return M
