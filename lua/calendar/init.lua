@@ -238,7 +238,7 @@ local function generate_day_map(entries, window_start, window_end)
 	end)
 	local days_map = {}
 	for _, entry in ipairs(entries_with_recurrences) do
-		if entry.dtstart.value > window_end or (entry.dtend and entry.dtend.value < window_start) then
+		if entry.dtstart.value > window_end or (entry.dtend and entry.dtend.value < window_start or entry.dtstart.value < window_start) then
 			goto continue
 		end
 		if config.intermediate_events then
