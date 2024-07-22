@@ -266,9 +266,16 @@ local function generate_day_map(entries, window_start, window_end)
 					summary = "<->" .. entry.summary
 				end
 			else
-				local start_time = format_time(entry.dtstart.value)
-				local end_time = entry.dtend and format_time(entry.dtend.value) or ""
-				time = string.format("%7s - %7s", start_time, end_time)
+				local start_time = ""
+				if get_date(entry.dtstart.value) == day then
+					start_time = format_time(entry.dtstart.value)
+				end
+				local end_time = ""
+				if entry.dtend and get_date(entry.dtend.value) == day then
+					end_time = format_time(entry.dtend.value)
+				end
+				time = string.format("%7s %1s %7s", start_time, ((start_time ~= "" or end_time ~= "") and "-" or ""),
+					end_time)
 			end
 			local line
 			if first_event then
