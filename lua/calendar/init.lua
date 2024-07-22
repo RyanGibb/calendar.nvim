@@ -46,27 +46,29 @@ local function parse_datetime(date)
 	t.year, t.month, t.day = date:match("^(%d%d%d%d)(%d%d)(%d%d)")
 	t.hour, t.min, t.sec = date:match("T(%d%d)(%d%d)(%d%d)")
 	if t.year and t.month and t.day and t.hour and t.min and t.sec then
-		return os.time(t)
+		return { type = "time", value = os.time(t) }
 	end
 	if t.year and t.month and t.day then
 		t.hour, t.min, t.sec = 0, 0, 0
-		return os.time(t)
+		return { type = "date", value = os.time(t) }
 	end
 	return nil, "Invalid date format"
 end
 
-local function format_date(datetime)
-	if not datetime then
-		return ""
-	end
-	local d = os.date("*t", datetime)
-	local format
-	if d.sec == 0 and d.min == 0 and d.hour == 0 then
-		format = "%Y-%m-%d"
-	else
-		format = "%Y-%m-%d %I:%M%p"
-	end
-	return os.date(format, datetime)
+local function get_date(datetime)
+	local t = os.date("*t", datetime)
+	t.hour, t.min, t.sec = 0, 0, 0
+	return os.time(t)
+end
+
+local function format_date(date)
+	local format = "%Y-%m-%d"
+	return os.date(format, date)
+end
+
+local function format_time(time)
+	local format = "%I:%M%p"
+	return os.date(format, time)
 end
 
 local function load_entry(event)
@@ -122,7 +124,8 @@ local function load_cal(dir)
 	return cal_name, entries
 end
 
-local function add_time_to_date(date, interval, unit)
+-- TODO make this timezone insensative
+local function increment_date(date, interval, unit)
 	local t = os.date("*t", date)
 	if unit == "DAILY" then
 		t.day = t.day + interval
@@ -150,12 +153,17 @@ local function recurring_entries(entry, exceptions)
 
 	local until_time = nil
 	if until_str then
-		until_time = parse_datetime(until_str)
+		until_time = parse_datetime(until_str).value
 	end
 
-	local occurrence_datetime = entry.dtstart
-	local end_time_offset = entry.dtend - entry.dtstart
-	local max_recurrences = 10
+	local occurrence_datetime = entry.dtstart.value
+	local end_time_offset
+	if entry.dtend then
+		end_time_offset = entry.dtend.value - entry.dtstart.value
+	else
+		end_time_offset = 0
+	end
+	local max_recurrences = 1000
 	while #recurrences < max_recurrences do
 		if until_time and occurrence_datetime > until_time then
 			break
@@ -164,8 +172,10 @@ local function recurring_entries(entry, exceptions)
 			break
 		end
 		local occurrence = vim.deepcopy(entry)
-		occurrence.dtstart = occurrence_datetime
-		occurrence.dtend = occurrence_datetime + end_time_offset
+		occurrence.dtstart.value = occurrence_datetime
+		if occurrence.dtend then
+			occurrence.dtend.value = occurrence_datetime + end_time_offset
+		end
 
 		local is_exception = false
 		for _, ex in ipairs(exceptions) do
@@ -179,7 +189,7 @@ local function recurring_entries(entry, exceptions)
 			table.insert(recurrences, occurrence)
 		end
 
-		occurrence_datetime = add_time_to_date(occurrence_datetime, interval, freq)
+		occurrence_datetime = increment_date(occurrence_datetime, interval, freq)
 	end
 
 	return recurrences
@@ -194,6 +204,7 @@ local function display_cal(cal_name, entries)
 			table.insert(exceptions, entry)
 		end
 	end
+
 	for _, entry in ipairs(entries) do
 		if not entry.recurrence_id then
 			local recurrences = recurring_entries(entry, exceptions)
@@ -204,38 +215,90 @@ local function display_cal(cal_name, entries)
 	end
 
 	table.sort(entries_with_recurrences, function(a, b)
-		return a.dtstart < b.dtstart
+		return a.dtstart.value < b.dtstart.value
 	end)
+
+	local days_map = {}
+	for _, entry in ipairs(entries_with_recurrences) do
+		local current_day = get_date(entry.dtstart.value)
+		repeat
+			if not days_map[current_day] then
+				days_map[current_day] = {}
+			end
+			table.insert(days_map[current_day], entry)
+			-- we call get_date here to zero the hours, mins, and seconds,
+			-- (e.g. summer time) which might vary due to timezone changes
+			current_day = get_date(increment_date(current_day, 1, "DAILY"))
+		until
+		-- dtend is exclusive
+			not entry.dtend or current_day >= entry.dtend.value
+	end
+
+	-- Sort the days
+	local sorted_days = {}
+	for day in pairs(days_map) do
+		table.insert(sorted_days, day)
+	end
+	table.sort(sorted_days)
+
+	local lines = {}
+	local today = get_date(os.time())
+	local current_line = 0
+	local entry_to_line_map = {}
+
+	for _, day in ipairs(sorted_days) do
+		if day == today then
+			current_line = #lines + 1
+		end
+		local day_str = format_date(day)
+		local first_event = true
+		for _, entry in ipairs(days_map[day]) do
+			local summary = entry.summary or ""
+			local time = ""
+			-- the last day the event occurs on is one day (86400 seconds) before the exclusive dtend
+			local last_day = entry.dtend and entry.dtend.value - 86400 or entry.dtstart.value
+			if entry.dtstart.type == "date" and entry.dtstart.value ~= last_day then
+				if day == entry.dtstart.value then
+					summary = "|->" .. entry.summary
+				elseif day == last_day then
+					summary = "<-|" .. entry.summary
+				elseif day > entry.dtstart.value and day < last_day then
+					summary = "<->" .. entry.summary
+				end
+			else
+				local start_time = format_time(entry.dtstart.value)
+				local end_time = entry.dtend and format_time(entry.dtend.value) or ""
+				time = string.format("%7s - %7s", start_time, end_time)
+			end
+			local line
+			if first_event then
+				line = string.format("%s %17s %s", day_str, time, summary)
+				first_event = false
+			else
+				line = string.format(" %27s %s", time, summary)
+			end
+			table.insert(lines, line)
+			entry_to_line_map[#lines] = entry
+		end
+	end
 
 	local bufnr = api.nvim_create_buf(false, true)
 	api.nvim_set_option_value('buftype', 'nofile', { buf = bufnr })
-	-- api.nvim_set_option_value('bufhidden', 'hide', { buf = bufnr })
 	api.nvim_set_option_value('swapfile', false, { buf = bufnr })
 	api.nvim_set_option_value('buflisted', true, { buf = bufnr })
 	api.nvim_buf_set_name(bufnr, cal_name .. " Calendar")
 	api.nvim_command('enew')
 	api.nvim_win_set_buf(0, bufnr)
-
-	local lines = {}
-	local current_time = os.time()
-	local current_line = 0
-
-	for i, entry in ipairs(entries_with_recurrences) do
-		if current_line == 0 and entry.dtstart >= current_time then
-			current_line = i
-		end
-		local len = string.len(format_date(0))
-		table.insert(lines,
-			string.format("%-" .. len .. "s -- %-" .. 18 .. "s %s", format_date(entry.dtstart),
-				format_date(entry.dtend) or entry.dtstart, entry.summary or "-"))
-	end
+	api.nvim_set_option_value('cursorline', true, { scope = "local" })
 
 	api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
+	-- Set buffer options
 	api.nvim_set_option_value('modifiable', false, { buf = bufnr })
 	api.nvim_set_option_value('readonly', true, { buf = bufnr })
 
-	api.nvim_buf_set_var(bufnr, 'entries', entries_with_recurrences)
+	-- Store entries in buffer variable
+	api.nvim_buf_set_var(bufnr, 'entry_to_line_map', entry_to_line_map)
 
 	-- Create a mapping to open the corresponding file
 	api.nvim_buf_set_keymap(bufnr, 'n', '<CR>', '<cmd>lua _G.open_event_file()<CR>', { noremap = true, silent = true })
@@ -250,8 +313,8 @@ function _G.open_event_file()
 	local bufnr = api.nvim_get_current_buf()
 	local cursor = api.nvim_win_get_cursor(0)
 	local line_nr = cursor[1]
-	local entries = api.nvim_buf_get_var(bufnr, 'entries')
-	local entry = entries[line_nr]
+	local entry_to_line_map = api.nvim_buf_get_var(bufnr, 'entry_to_line_map')
+	local entry = entry_to_line_map[line_nr]
 	if entry and entry.file_path then
 		vim.cmd('edit ' .. entry.file_path)
 	else
