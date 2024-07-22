@@ -196,6 +196,18 @@ local function recurring_entries(entry, exceptions, window_start, window_end)
 	return recurrences
 end
 
+function _G.calendar_fold_text()
+	local start = vim.v.foldstart
+	local finish = vim.v.foldend
+	local lines = {}
+
+	for lnum = start, finish do
+		table.insert(lines, all_trim(vim.fn.getline(lnum)))
+	end
+
+	return table.concat(lines, " ")
+end
+
 local function display_cal(cal_name, entries, window_start, window_end)
 	local entries_with_recurrences = {}
 	local exceptions = {}
@@ -314,6 +326,12 @@ local function display_cal(cal_name, entries, window_start, window_end)
 	if current_line > 0 then
 		api.nvim_win_set_cursor(0, { current_line, 0 })
 	end
+
+	-- Set up folding
+	vim.api.nvim_set_option_value('foldmethod', 'expr', { scope = "local" })
+	vim.api.nvim_set_option_value('foldexpr', "indent(v:lnum)==0?'>1':1", { scope = "local" })
+	vim.api.nvim_set_option_value('foldtext', 'v:lua._G.calendar_fold_text()', { scope = "local" })
+	vim.api.nvim_set_option_value('foldlevelstart', 1, { scope = "local" })
 end
 
 function _G.open_event_file()
