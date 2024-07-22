@@ -257,13 +257,15 @@ local function generate_day_map(entries, window_start, window_end)
 			local time = ""
 			-- the last day the event occurs on is one day (86400 seconds) before the exclusive dtend
 			local last_day = entry.dtend and entry.dtend.value - 86400 or entry.dtstart.value
-			if entry.dtstart.type == "date" and entry.dtstart.value ~= last_day then
-				if day == entry.dtstart.value then
-					summary = "|->" .. entry.summary
-				elseif day == last_day then
-					summary = "<-|" .. entry.summary
-				elseif day > entry.dtstart.value and day < last_day then
-					summary = "<->" .. entry.summary
+			if entry.dtstart.type == "date" then
+				if entry.dtstart.value ~= last_day then
+				  if day == entry.dtstart.value then
+					summary = "|-> " .. entry.summary
+				  elseif day == last_day then
+					summary = "<-| " .. entry.summary
+				  elseif day > entry.dtstart.value and day < last_day then
+					summary = "<-> " .. entry.summary
+				  end
 				end
 			else
 				local start_time = ""
