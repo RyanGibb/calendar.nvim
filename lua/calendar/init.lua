@@ -342,6 +342,10 @@ local function display_cal(cal_name, lines, line_to_entry_map, current_line)
 	-- Move the cursor to the first event on or after current date
 	if current_line > 0 then
 		api.nvim_win_set_cursor(0, { current_line, 0 })
+		-- put today at the top of the window
+		vim.api.nvim_win_call(0, function()
+			vim.cmd('normal! zt')
+		end)
 	end
 
 	-- Set up folding
