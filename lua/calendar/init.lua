@@ -17,7 +17,6 @@ end
 local function parse_ical(content, file_path)
 	local events = {}
 	local event = nil
-
 	for line in content:gmatch("[^\r\n]+") do
 		if line:match("^BEGIN:VEVENT") then
 			event = { file_path = file_path }
@@ -33,7 +32,6 @@ local function parse_ical(content, file_path)
 			end
 		end
 	end
-
 	return events
 end
 
@@ -90,7 +88,6 @@ end
 local function load_cal(dir)
 	dir = vim.fs.normalize(dir)
 	local cal_name = vim.fs.basename(dir)
-
 	local stat = vim.loop.fs_stat(dir)
 	if not stat or stat.type ~= 'directory' then
 		print("Directory does not exist: " .. dir)
@@ -120,7 +117,6 @@ local function load_cal(dir)
 			table.insert(entries, entry)
 		end
 	end
-
 	return cal_name, entries
 end
 
@@ -144,37 +140,31 @@ local function recurring_entries(entry, exceptions, window_start, window_end)
 	if not rrule then
 		return { entry }
 	end
-
 	local recurrences = {}
 	local interval = tonumber(rrule:match("INTERVAL=(%d+)")) or 1
 	local freq = rrule:match("FREQ=(%a+)")
 	local until_str = rrule:match("UNTIL=(%d+T?%d*)")
 	local count = tonumber(rrule:match("COUNT=(%d+)"))
-
 	local until_time = nil
 	if until_str then
 		until_time = parse_datetime(until_str).value
 	end
-
 	local occurrence_datetime = entry.dtstart.value
 	local end_time_offset = entry.dtend and entry.dtend.value - entry.dtstart.value or 0
 	local max_recurrences = 1000
 	local recurrences_count = 0
-
 	while recurrences_count < max_recurrences do
 		if (until_time and occurrence_datetime > until_time) or
 			(count and recurrences_count >= count) or
 			(occurrence_datetime > window_end) then
 			break
 		end
-
 		if occurrence_datetime >= window_start or (occurrence_datetime + end_time_offset) <= window_end then
 			local occurrence = vim.deepcopy(entry)
 			occurrence.dtstart.value = occurrence_datetime
 			if occurrence.dtend then
 				occurrence.dtend.value = occurrence_datetime + end_time_offset
 			end
-
 			local is_exception = false
 			for _, ex in ipairs(exceptions) do
 				if ex.recurrence_id and ex.recurrence_id.value == occurrence_datetime then
@@ -186,13 +176,10 @@ local function recurring_entries(entry, exceptions, window_start, window_end)
 			if not is_exception then
 				table.insert(recurrences, occurrence)
 			end
-
 			recurrences_count = recurrences_count + 1
 		end
-
 		occurrence_datetime = increment_date(occurrence_datetime, interval, freq)
 	end
-
 	return recurrences
 end
 
@@ -200,24 +187,20 @@ function _G.calendar_fold_text()
 	local start = vim.v.foldstart
 	local finish = vim.v.foldend
 	local lines = {}
-
 	for lnum = start, finish do
 		table.insert(lines, all_trim(vim.fn.getline(lnum)))
 	end
-
 	return table.concat(lines, " ")
 end
 
 local function generate_day_map(entries, window_start, window_end)
 	local entries_with_recurrences = {}
 	local exceptions = {}
-
 	for _, entry in ipairs(entries) do
 		if entry.recurrence_id then
 			table.insert(exceptions, entry)
 		end
 	end
-
 	for _, entry in ipairs(entries) do
 		if not entry.recurrence_id then
 			local recurrences = recurring_entries(entry, exceptions, window_start, window_end)
@@ -226,11 +209,9 @@ local function generate_day_map(entries, window_start, window_end)
 			end
 		end
 	end
-
 	table.sort(entries_with_recurrences, function(a, b)
 		return a.dtstart.value < b.dtstart.value
 	end)
-
 	local days_map = {}
 	for _, entry in ipairs(entries_with_recurrences) do
 		if entry.dtstart.value > window_end or (entry.dtstart and entry.dtstart.value < window_start) then
@@ -356,7 +337,6 @@ vim.api.nvim_create_user_command(
 			print("Usage: Calendar <dir> [<start_date>] [<end_date>]")
 			return
 		end
-
 		local window_start, window_end = os.time({ year = 0, month = 1, day = 1 }),
 			increment_date(os.time(), 100, "YEARLY")
 		if args[2] then
@@ -365,7 +345,6 @@ vim.api.nvim_create_user_command(
 		if args[3] then
 			window_end = parse_datetime(args[3]).value
 		end
-
 		local cal_name, entries = load_cal(dir)
 		if cal_name then
 			local lines, line_to_entry_map, current_line = generate_day_map(entries, window_start, window_end)
